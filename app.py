@@ -9,6 +9,8 @@ from youtube_scraper import (
     get_saved_list_names,
     get_exclude_ids_from_list,
     get_exclude_ids_from_csv,
+    get_exclude_channels_from_list,
+    get_exclude_channels_from_csv,
     save_preset,
     load_preset,
     get_preset_names,
@@ -269,7 +271,7 @@ if 'scraping_done' not in st.session_state:
 ALL_COLUMNS = [
     "Search Keyword", "Video URL", "Video Title", "Channel Name", "Channel URL",
     "Creator Name", "View Count", "Upload Date", "Duration (min)", "Subscriber Count",
-    "Tags", "All Emails", "Desc Emails", "Bio Emails", "Social Emails",
+    "Last Published", "Tags", "All Emails", "Desc Emails", "Bio Emails", "Social Emails",
     "Social Links", "Matching Hashtags", "Channel Bio", "Full Description",
     "Apify Emails",
 ]
@@ -366,6 +368,18 @@ with st.sidebar:
         min_subs = st.number_input("Min Subscribers", min_value=0,
                                    value=lp.get("min_subs", 0), step=1000)
 
+        last_published_options = [
+            "Any", "1 month", "2 months", "3 months", "4 months",
+            "5 months", "6 months", "7 months", "8 months", "9 months",
+            "10 months", "11 months", "12 months", "2 years",
+        ]
+        last_published_filter = st.selectbox(
+            "Last Published Within",
+            options=last_published_options,
+            index=0,
+            help="Only show channels that published a video within this period.",
+        )
+
         tag_filter = st.text_input("Filter by Tags", value=lp.get("tag_filter", ""),
                                    placeholder="e.g. sales, automation",
                                    help="Comma-separated. Only show results containing these tags.")
@@ -373,6 +387,11 @@ with st.sidebar:
     # ── Exclude Leads ─────────────────────────────────────────────────────
     with st.expander("🚫  Exclude Leads", expanded=False):
         st.caption("Skip leads you've already collected.")
+        exclude_channels_toggle = st.checkbox(
+            "Exclude by channel (not just video)",
+            value=True,
+            help="Skip entire channels found in excluded lists/CSVs.",
+        )
         uploaded_csv = st.file_uploader("Import CSV to exclude", type=["csv"],
                                         key="exclude_csv")
         saved_lists = get_saved_list_names()
@@ -434,12 +453,19 @@ with st.sidebar:
 # HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 def build_exclude_ids():
+    """Return (video_ids_set, channel_urls_set) for exclusion."""
     ids = set()
+    channels = set()
     if uploaded_csv is not None:
         ids.update(get_exclude_ids_from_csv(uploaded_csv))
+        if exclude_channels_toggle:
+            uploaded_csv.seek(0)
+            channels.update(get_exclude_channels_from_csv(uploaded_csv))
     for name in exclude_lists:
         ids.update(get_exclude_ids_from_list(name))
-    return ids
+        if exclude_channels_toggle:
+            channels.update(get_exclude_channels_from_list(name))
+    return ids, channels
 
 
 def apply_filters(df):
@@ -460,6 +486,16 @@ def apply_filters(df):
         out = out[out["Duration (min)"] <= max_duration]
     if min_subs > 0:
         out = out[out["Subscriber Count"] >= min_subs]
+    # Last Published filter
+    if last_published_filter != "Any" and "Last Published" in out.columns:
+        out["_lp"] = pd.to_datetime(out["Last Published"], errors="coerce")
+        if last_published_filter == "2 years":
+            cutoff = datetime.now() - timedelta(days=730)
+        else:
+            months = int(last_published_filter.split()[0])
+            cutoff = datetime.now() - timedelta(days=months * 30)
+        out = out[out["_lp"] >= pd.Timestamp(cutoff)]
+        out = out.drop(columns=["_lp"], errors="ignore")
     if tag_filter and tag_filter.strip():
         filter_tags = [t.strip().lower() for t in tag_filter.split(",") if t.strip()]
         if filter_tags:
@@ -469,7 +505,7 @@ def apply_filters(df):
     return out
 
 
-def run_scrape(num_results, exclude_ids):
+def run_scrape(num_results, exclude_ids, exclude_channels):
     progress_bar = st.progress(0)
     status_text = st.empty()
     live_table = st.empty()
@@ -507,6 +543,7 @@ def run_scrape(num_results, exclude_ids):
         search_emails=search_emails,
         search_hashtags=hashtag_list,
         exclude_video_ids=exclude_ids,
+        exclude_channel_urls=exclude_channels,
         enrichment_api_key=apify_api_token if apify_api_token else None,
         apify_actor_id=apify_actor_id if apify_actor_id else None,
         enable_bio_scraping=enable_bio,
@@ -530,8 +567,8 @@ if start_btn:
         st.session_state.scraped_ids = set()
         st.session_state.scraping_done = False
 
-        exclude_ids = build_exclude_ids()
-        results, new_ids = run_scrape(limit, exclude_ids)
+        exclude_ids, exclude_channels = build_exclude_ids()
+        results, new_ids = run_scrape(limit, exclude_ids, exclude_channels)
         st.session_state.results = results
         st.session_state.scraped_ids = new_ids
         st.session_state.scraping_done = True
@@ -597,8 +634,9 @@ if st.session_state.scraping_done and st.session_state.results:
         continue_btn = st.button("Continue →", type="primary", key="cont_btn")
 
     if continue_btn:
-        exclude_ids = build_exclude_ids() | st.session_state.scraped_ids
-        new_results, new_ids = run_scrape(more_count, exclude_ids)
+        base_ids, base_channels = build_exclude_ids()
+        exclude_ids = base_ids | st.session_state.scraped_ids
+        new_results, new_ids = run_scrape(more_count, exclude_ids, base_channels)
         st.session_state.results.extend(new_results)
         st.session_state.scraped_ids.update(new_ids)
         st.rerun()

@@ -149,12 +149,10 @@ def get_full_metadata(video_url):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def get_channel_bio(channel_url):
-    """Fetch channel About page bio and social links using yt-dlp."""
+    """Fetch channel About page bio, social links, and last published date using yt-dlp."""
+    empty = {'bio': '', 'bio_emails': [], 'social_links': [], 'creator_name': '', 'last_published': ''}
     if not channel_url or channel_url == "Unknown":
-        return {'bio': '', 'bio_emails': [], 'social_links': [], 'creator_name': ''}
-
-    # Normalize to /about URL
-    about_url = channel_url.rstrip('/') + '/about'
+        return empty
 
     ydl_opts = {
         'quiet': True,
@@ -183,14 +181,33 @@ def get_channel_bio(channel_url):
             # Extract creator name
             creator_name = extract_creator_name(bio, channel_name)
 
+            # Extract last published video date from channel entries
+            last_published = ''
+            entries = info.get('entries', [])
+            if entries:
+                # entries is a generator or list of flat video dicts
+                for entry in entries:
+                    if isinstance(entry, dict):
+                        raw_date = entry.get('upload_date', '') or ''
+                        if raw_date and len(raw_date) == 8:
+                            last_published = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}"
+                            break  # First entry = most recent
+
+            # Fallback: try modified_date or upload_date on channel itself
+            if not last_published:
+                raw = info.get('modified_date', '') or info.get('upload_date', '') or ''
+                if raw and len(raw) == 8:
+                    last_published = f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}"
+
             return {
                 'bio': bio,
                 'bio_emails': list(set(bio_emails)),
                 'social_links': list(set(social_links))[:10],
                 'creator_name': creator_name,
+                'last_published': last_published,
             }
     except Exception:
-        return {'bio': '', 'bio_emails': [], 'social_links': [], 'creator_name': ''}
+        return empty
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -294,6 +311,16 @@ def get_exclude_ids_from_list(name):
             ids.add(url.split("watch?v=")[-1].split("&")[0])
     return ids
 
+def get_exclude_channels_from_list(name):
+    """Extract channel URLs from a saved list for channel-level exclusion."""
+    records = load_list(name)
+    channels = set()
+    for r in records:
+        ch = r.get("Channel URL", "")
+        if ch and ch != "Unknown":
+            channels.add(ch.rstrip("/"))
+    return channels
+
 def get_exclude_ids_from_csv(csv_content):
     try:
         df = pd.read_csv(csv_content)
@@ -303,6 +330,20 @@ def get_exclude_ids_from_csv(csv_content):
                 if "watch?v=" in str(url):
                     ids.add(str(url).split("watch?v=")[-1].split("&")[0])
         return ids
+    except Exception:
+        return set()
+
+def get_exclude_channels_from_csv(csv_content):
+    """Extract channel URLs from uploaded CSV for channel-level exclusion."""
+    try:
+        csv_content.seek(0)
+        df = pd.read_csv(csv_content)
+        channels = set()
+        if "Channel URL" in df.columns:
+            for url in df["Channel URL"].dropna():
+                if str(url) != "Unknown":
+                    channels.add(str(url).rstrip("/"))
+        return channels
     except Exception:
         return set()
 
@@ -348,6 +389,7 @@ def scrape_youtube_for_leads(
     search_emails=True,
     search_hashtags=None,
     exclude_video_ids=None,
+    exclude_channel_urls=None,
     enrichment_api_key=None,
     apify_actor_id=None,
     enable_bio_scraping=True,
@@ -356,7 +398,11 @@ def scrape_youtube_for_leads(
 ):
     if exclude_video_ids is None:
         exclude_video_ids = set()
-    fetch_limit = max_results + len(exclude_video_ids)
+    if exclude_channel_urls is None:
+        exclude_channel_urls = set()
+    # Normalize channel URLs for comparison
+    exclude_channel_urls = {u.rstrip('/') for u in exclude_channel_urls}
+    fetch_limit = max_results + len(exclude_video_ids) + len(exclude_channel_urls) * 5
 
     try:
         generator = scrapetube.get_search(query, limit=fetch_limit, sort_by=sort_by)
@@ -400,6 +446,10 @@ def scrape_youtube_for_leads(
         except Exception:
             pass
 
+        # ── Skip excluded channels ───────────────────────────────────────
+        if channel_url != "Unknown" and channel_url.rstrip('/') in exclude_channel_urls:
+            continue
+
         # ── TIER 1: Video metadata & description emails ──────────────────
         meta = get_full_metadata(video_url)
         full_description = meta['description']
@@ -426,6 +476,7 @@ def scrape_youtube_for_leads(
         social_links_from_bio = []
         creator_name = ""
         channel_bio = ""
+        last_published = ""
 
         if enable_bio_scraping and channel_url != "Unknown":
             if channel_url not in channel_cache:
@@ -436,6 +487,7 @@ def scrape_youtube_for_leads(
             bio_emails = cached['bio_emails']
             social_links_from_bio = cached['social_links']
             creator_name = cached['creator_name']
+            last_published = cached.get('last_published', '')
 
         # ── TIER 3: Social URL scraping ──────────────────────────────────
         social_emails = []
@@ -463,6 +515,7 @@ def scrape_youtube_for_leads(
             "Upload Date": meta['upload_date'],
             "Duration (min)": meta['duration_min'],
             "Subscriber Count": meta['subscriber_count'],
+            "Last Published": last_published,
             "Tags": ", ".join(meta['tags']) if meta['tags'] else "",
             "Desc Emails": ", ".join(desc_emails) if desc_emails else "",
             "Bio Emails": ", ".join(bio_emails) if bio_emails else "",
