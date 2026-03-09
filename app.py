@@ -304,7 +304,8 @@ with st.sidebar:
     lp = st.session_state.get('loaded_preset', {})
 
     # ── Search ────────────────────────────────────────────────────────────
-    with st.expander("🔍  Search", expanded=True):
+    with st.expander("🔍  Search Parameters (Pre-Scrape)", expanded=True):
+        st.caption("Applied before scraping. Affects search time and scope.")
         query = st.text_input("Keywords", value=lp.get("query", ""),
                               placeholder="e.g. sales automation")
         st.markdown("""
@@ -327,7 +328,7 @@ with st.sidebar:
         )
 
     # ── Enrichment Pipeline ───────────────────────────────────────────────
-    with st.expander("🔬  Enrichment Pipeline", expanded=True):
+    with st.expander("🔬  Enrichment Parameters (Pre-Scrape)", expanded=True):
         st.caption("Control which tiers of the enrichment pipeline to run.")
         enable_bio = st.checkbox("Tier 2: Channel bio scraping", value=lp.get("enable_bio", True))
         enable_social = st.checkbox("Tier 3: Social URL scraping", value=lp.get("enable_social", True))
@@ -341,8 +342,8 @@ with st.sidebar:
                                            placeholder="#sales, #ai")
 
     # ── Filters ───────────────────────────────────────────────────────────
-    with st.expander("⚙️  Filters", expanded=False):
-        st.caption("Applied after scraping to refine results.")
+    with st.expander("⚙️  Result Filters (Post-Scrape)", expanded=False):
+        st.caption("Applied instantly after scraping to hide unwanted results.")
         f1, f2 = st.columns(2)
         with f1:
             min_views = st.number_input("Min Views", min_value=0,
@@ -385,8 +386,8 @@ with st.sidebar:
                                    help="Comma-separated. Only show results containing these tags.")
 
     # ── Exclude Leads ─────────────────────────────────────────────────────
-    with st.expander("🚫  Exclude Leads", expanded=False):
-        st.caption("Skip leads you've already collected.")
+    with st.expander("🚫  Exclusion Parameters (Pre-Scrape)", expanded=False):
+        st.caption("Skip leads you've already collected. Evaluated during search.")
         exclude_channels_toggle = st.checkbox(
             "Exclude by channel (not just video)",
             value=True,
