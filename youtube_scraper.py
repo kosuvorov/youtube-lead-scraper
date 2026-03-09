@@ -109,6 +109,40 @@ def extract_social_links(text):
     return cleaned[:10]  # Cap at 10 links
 
 
+def parse_relative_date(time_str):
+    """Convert relative YouTube time ('2 months ago') to YYYY-MM-DD."""
+    import datetime
+    if not time_str:
+        return ""
+    
+    time_str = time_str.lower()
+    now = datetime.datetime.now()
+    
+    match = re.search(r'(\d+)\s+(second|minute|hour|day|week|month|year)', time_str)
+    if not match:
+        return ""
+    
+    num = int(match.group(1))
+    unit = match.group(2)
+    
+    if unit == 'second':
+        now -= datetime.timedelta(seconds=num)
+    elif unit == 'minute':
+        now -= datetime.timedelta(minutes=num)
+    elif unit == 'hour':
+        now -= datetime.timedelta(hours=num)
+    elif unit == 'day':
+        now -= datetime.timedelta(days=num)
+    elif unit == 'week':
+        now -= datetime.timedelta(weeks=num)
+    elif unit == 'month':
+        now -= datetime.timedelta(days=num * 30)
+    elif unit == 'year':
+        now -= datetime.timedelta(days=num * 365)
+        
+    return now.strftime("%Y-%m-%d")
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # TIER 1: VIDEO METADATA (already exists)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -198,6 +232,18 @@ def get_channel_bio(channel_url):
                 raw = info.get('modified_date', '') or info.get('upload_date', '') or ''
                 if raw and len(raw) == 8:
                     last_published = f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}"
+
+            # Ultimate fallback if yt-dlp didn't catch any entries: fetch via scrapetube
+            if not last_published:
+                try:
+                    ch_videos = scrapetube.get_channel(channel_url=channel_url, limit=1)
+                    for vid in ch_videos:
+                        pub_text = vid.get('publishedTimeText', {}).get('simpleText', '')
+                        if pub_text:
+                            last_published = parse_relative_date(pub_text)
+                        break
+                except Exception:
+                    pass
 
             return {
                 'bio': bio,
