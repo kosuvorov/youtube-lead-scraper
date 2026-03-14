@@ -20,20 +20,49 @@ os.makedirs(PRESETS_DIR, exist_ok=True)
 # UTILITY FUNCTIONS
 # ══════════════════════════════════════════════════════════════════════════════
 
-def extract_emails(text):
-    """Find email addresses in text using regex."""
+def extract_emails(text, ignore_emails=None):
+    """Find email addresses in text using regex, excluding ignored ones."""
     if not text:
         return []
+    if ignore_emails is None:
+        ignore_emails = []
+    
+    ignore_set = {e.lower().strip() for e in ignore_emails if e.strip()}
     pattern = r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+'
     emails = re.findall(pattern, text)
-    # Filter out common false positives
+    
+    # Filter out common false positives and user-ignored emails
     false_positives = {'example.com', 'email.com', 'domain.com', 'test.com',
                        'yourname', 'youremail', 'your@'}
+                       
+    invalid_extensions = {'.png', '.gif', '.jpg', '.jpeg', '.webp', '.svg', '.css', '.js', '.mp4', '.avi', '.mov', '.mp3', '.wav', '.pdf', '.zip', '.tar', '.gz'}
+
     cleaned = []
     for e in emails:
-        e_lower = e.lower()
-        if not any(fp in e_lower for fp in false_positives):
-            cleaned.append(e.lower())
+        # Strip trailing punctuation that regex might catch
+        e_lower = e.lower().rstrip('.,;:!?)"\'>]')
+        if ignore_set and e_lower in ignore_set:
+            continue
+        
+        # Check false positives unconditionally on domain and local parts
+        is_false_positive = False
+        parts = e_lower.split('@')
+        if len(parts) == 2:
+            local_part, domain_part = parts
+            
+            # Check for generic image/file extensions
+            if any(domain_part.endswith(ext) for ext in invalid_extensions):
+                is_false_positive = True
+            
+            if not is_false_positive:
+                for fp in false_positives:
+                    if fp == domain_part or domain_part.endswith(f".{fp}") or fp in local_part:
+                        is_false_positive = True
+                        break
+        
+        if not is_false_positive:
+            cleaned.append(e_lower)
+
     return list(set(cleaned))
 
 
@@ -182,7 +211,7 @@ def get_full_metadata(video_url):
 # TIER 2: CHANNEL BIO EXTRACTION
 # ══════════════════════════════════════════════════════════════════════════════
 
-def get_channel_bio(channel_url):
+def get_channel_bio(channel_url, ignore_emails=None):
     """Fetch channel About page bio, social links, and last published date using yt-dlp."""
     empty = {'bio': '', 'bio_emails': [], 'social_links': [], 'creator_name': '', 'last_published': ''}
     if not channel_url or channel_url == "Unknown":
@@ -202,7 +231,7 @@ def get_channel_bio(channel_url):
             channel_name = info.get('channel', '') or info.get('uploader', '') or ''
 
             # Extract emails from bio
-            bio_emails = extract_emails(bio)
+            bio_emails = extract_emails(bio, ignore_emails)
 
             # Extract social links from bio
             social_links = extract_social_links(bio)
@@ -260,7 +289,7 @@ def get_channel_bio(channel_url):
 # TIER 3: SOCIAL URL SCRAPING
 # ══════════════════════════════════════════════════════════════════════════════
 
-def scrape_social_links_for_emails(social_links):
+def scrape_social_links_for_emails(social_links, ignore_emails=None):
     """Visit social link pages and try to extract emails from HTML."""
     found_emails = []
     headers = {
@@ -281,12 +310,14 @@ def scrape_social_links_for_emails(social_links):
         try:
             resp = requests.get(link, headers=headers, timeout=5, allow_redirects=True)
             if resp.status_code == 200:
-                # Check for mailto: links
-                mailto_emails = re.findall(r'mailto:([a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)',
+                mailto_emails = re.findall(r'mailto:[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+',
                                            resp.text)
-                found_emails.extend(mailto_emails)
+                if mailto_emails:
+                    # Strip 'mailto:' prefix
+                    mailto_emails = [m.replace("mailto:", "") for m in mailto_emails]
+                    found_emails.extend(extract_emails(" ".join(mailto_emails), ignore_emails))
                 # General email regex on page text
-                page_emails = extract_emails(resp.text)
+                page_emails = extract_emails(resp.text, ignore_emails)
                 found_emails.extend(page_emails)
         except Exception:
             continue
@@ -436,6 +467,7 @@ def scrape_youtube_for_leads(
     search_hashtags=None,
     exclude_video_ids=None,
     exclude_channel_urls=None,
+    ignore_emails=None,
     enrichment_api_key=None,
     apify_actor_id=None,
     enable_bio_scraping=True,
@@ -446,6 +478,8 @@ def scrape_youtube_for_leads(
         exclude_video_ids = set()
     if exclude_channel_urls is None:
         exclude_channel_urls = set()
+    if ignore_emails is None:
+        ignore_emails = []
     # Normalize channel URLs for comparison
     exclude_channel_urls = {u.rstrip('/') for u in exclude_channel_urls}
     fetch_limit = max_results + len(exclude_video_ids) + len(exclude_channel_urls) * 5
@@ -510,7 +544,7 @@ def scrape_youtube_for_leads(
 
         desc_emails = []
         if search_emails:
-            desc_emails = extract_emails(full_description)
+            desc_emails = extract_emails(full_description, ignore_emails)
 
         matching_hashtags = []
         if search_hashtags:
@@ -526,7 +560,7 @@ def scrape_youtube_for_leads(
 
         if enable_bio_scraping and channel_url != "Unknown":
             if channel_url not in channel_cache:
-                bio_data = get_channel_bio(channel_url)
+                bio_data = get_channel_bio(channel_url, ignore_emails)
                 channel_cache[channel_url] = bio_data
             cached = channel_cache[channel_url]
             channel_bio = cached['bio']
@@ -545,7 +579,7 @@ def scrape_youtube_for_leads(
             # Only scrape if we don't have emails yet
             all_found = set(desc_emails + bio_emails)
             if not all_found:
-                social_emails = scrape_social_links_for_emails(all_social_links)
+                social_emails = scrape_social_links_for_emails(all_social_links, ignore_emails)
 
         # ── Merge all emails ─────────────────────────────────────────────
         all_emails = list(set(desc_emails + bio_emails + social_emails))

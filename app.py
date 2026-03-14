@@ -317,7 +317,7 @@ with st.sidebar:
             <code>intitle:automation</code> — title only
         </div>
         """, unsafe_allow_html=True)
-        limit = st.slider("Max Results", min_value=5, max_value=2000,
+        limit = st.slider("Max Results", min_value=5, max_value=8000,
                           value=lp.get("limit", 30), step=5)
         sort_options = ["relevance", "upload_date", "view_count", "rating"]
         sort_by = st.selectbox(
@@ -340,6 +340,13 @@ with st.sidebar:
             hashtags_input = st.text_input("Hashtags (comma-separated)",
                                            value=lp.get("hashtags_input", ""),
                                            placeholder="#sales, #ai")
+        # Ingored emails
+        ignored_emails_raw = st.text_area(
+            "Ignore Specific Emails",
+            value=lp.get("ignored_emails_raw", "js-cookie@3.0.5, api-services-support@amazon.com"),
+            help="Comma-separated emails to skip during extraction."
+        )
+        ignore_emails_list = [e.strip() for e in ignored_emails_raw.split(",") if e.strip()]
 
     # ── Filters ───────────────────────────────────────────────────────────
     with st.expander("⚙️  Result Filters (Post-Scrape)", expanded=False):
@@ -545,6 +552,7 @@ def run_scrape(num_results, exclude_ids, exclude_channels):
         search_hashtags=hashtag_list,
         exclude_video_ids=exclude_ids,
         exclude_channel_urls=exclude_channels,
+        ignore_emails=ignore_emails_list,
         enrichment_api_key=apify_api_token if apify_api_token else None,
         apify_actor_id=apify_actor_id if apify_actor_id else None,
         enable_bio_scraping=enable_bio,
@@ -558,86 +566,115 @@ def run_scrape(num_results, exclude_ids, exclude_channels):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MAIN: Start Scraping
+# MAIN CONTENT TABS
 # ══════════════════════════════════════════════════════════════════════════════
-if start_btn:
-    if not query:
-        st.warning("Please enter keywords first.")
-    else:
-        st.session_state.results = []
-        st.session_state.scraped_ids = set()
-        st.session_state.scraping_done = False
+tab_scraper, tab_lists = st.tabs(["🔍 Scraper", "📂 Saved Lists"])
 
-        exclude_ids, exclude_channels = build_exclude_ids()
-        results, new_ids = run_scrape(limit, exclude_ids, exclude_channels)
-        st.session_state.results = results
-        st.session_state.scraped_ids = new_ids
-        st.session_state.scraping_done = True
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# RESULTS
-# ══════════════════════════════════════════════════════════════════════════════
-if st.session_state.scraping_done and st.session_state.results:
-    df = pd.DataFrame(st.session_state.results)
-    df_filtered = apply_filters(df)
-
-    # ── Metrics ───────────────────────────────────────────────────────────
-    m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("Total Results", len(df_filtered))
-    emails_found = df_filtered["All Emails"].apply(lambda x: 1 if x else 0).sum()
-    m2.metric("Emails Found", emails_found)
-    m3.metric("Unique Channels", df_filtered["Channel Name"].nunique())
-    names_found = df_filtered["Creator Name"].apply(lambda x: 1 if x else 0).sum()
-    m4.metric("Creator Names", names_found)
-    avg_views = int(df_filtered["View Count"].mean()) if not df_filtered.empty else 0
-    m5.metric("Avg Views", f"{avg_views:,}")
-
-    # ── Table ─────────────────────────────────────────────────────────────
-    st.markdown('<div class="section-header">📊 Results</div>', unsafe_allow_html=True)
-    display_cols = [c for c in selected_columns if c in df_filtered.columns]
-    st.dataframe(df_filtered[display_cols], use_container_width=True, height=420)
-
-    # ── Export & Save ─────────────────────────────────────────────────────
-    exp_col1, exp_col2, exp_col3 = st.columns([2, 2, 3])
-
-    with exp_col1:
-        csv = df_filtered[display_cols].to_csv(index=False).encode("utf-8")
-        st.download_button(
-            label="⬇️  Download CSV",
-            data=csv,
-            file_name=f"youtube_leads_{query.replace(' ', '_')}.csv",
-            mime="text/csv",
-        )
-
-    with exp_col2:
-        list_name = st.text_input("List name", placeholder="my_leads_march",
-                                  label_visibility="collapsed")
-
-    with exp_col3:
-        if st.button("💾  Save as List", type="primary"):
-            if list_name and list_name.strip():
-                save_list(list_name.strip(), st.session_state.results)
-                st.success(f"Saved list: {list_name.strip()}")
-            else:
-                st.warning("Enter a name for the list.")
-
-    # ── Continue Scraping ─────────────────────────────────────────────────
-    st.markdown('<div class="section-header">🔄 Continue Scraping</div>', unsafe_allow_html=True)
-    st.caption("Fetch more leads with the same search. Already-scraped videos are skipped.")
-
-    cont1, cont2 = st.columns([2, 1])
-    with cont1:
-        more_count = st.number_input("More leads", min_value=5, max_value=2000,
-                                      value=30, step=5, key="more_count",
+with tab_scraper:
+    if start_btn:
+        if not query:
+            st.warning("Please enter keywords first.")
+        else:
+            st.session_state.results = []
+            st.session_state.scraped_ids = set()
+            st.session_state.scraping_done = False
+    
+            exclude_ids, exclude_channels = build_exclude_ids()
+            results, new_ids = run_scrape(limit, exclude_ids, exclude_channels)
+            st.session_state.results = results
+            st.session_state.scraped_ids = new_ids
+            st.session_state.scraping_done = True
+    
+    # ── RESULTS ───────────────────────────────────────────────────────────
+    if st.session_state.scraping_done and st.session_state.results:
+        df = pd.DataFrame(st.session_state.results)
+        df_filtered = apply_filters(df)
+        
+        # ── Metrics ───────────────────────────────────────────────────────────
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("Total Results", len(df_filtered))
+        emails_found = df_filtered["All Emails"].apply(lambda x: 1 if x else 0).sum()
+        m2.metric("Emails Found", emails_found)
+        m3.metric("Unique Channels", df_filtered["Channel Name"].nunique())
+        names_found = df_filtered["Creator Name"].apply(lambda x: 1 if x else 0).sum()
+        m4.metric("Creator Names", names_found)
+        avg_views = int(df_filtered["View Count"].mean()) if not df_filtered.empty else 0
+        m5.metric("Avg Views", f"{avg_views:,}")
+    
+        # ── Table ─────────────────────────────────────────────────────────────
+        st.markdown('<div class="section-header">📊 Results</div>', unsafe_allow_html=True)
+        display_cols = [c for c in selected_columns if c in df_filtered.columns]
+        st.dataframe(df_filtered[display_cols], use_container_width=True, height=420)
+    
+        # ── Export & Save ─────────────────────────────────────────────────────
+        exp_col1, exp_col2, exp_col3 = st.columns([2, 2, 3])
+    
+        with exp_col1:
+            csv = df_filtered[display_cols].to_csv(index=False).encode("utf-8")
+            st.download_button(
+                label="⬇️  Download CSV",
+                data=csv,
+                file_name=f"youtube_leads_{query.replace(' ', '_')}.csv",
+                mime="text/csv",
+            )
+    
+        with exp_col2:
+            list_name = st.text_input("List name", placeholder="my_leads_march",
                                       label_visibility="collapsed")
-    with cont2:
-        continue_btn = st.button("Continue →", type="primary", key="cont_btn")
+    
+        with exp_col3:
+            if st.button("💾  Save as List", type="primary"):
+                if list_name and list_name.strip():
+                    save_list(list_name.strip(), st.session_state.results)
+                    st.success(f"Saved list: {list_name.strip()}")
+                else:
+                    st.warning("Enter a name for the list.")
+    
+        # ── Continue Scraping ─────────────────────────────────────────────────
+        st.markdown('<div class="section-header">🔄 Continue Scraping</div>', unsafe_allow_html=True)
+        st.caption("Fetch more leads with the same search. Already-scraped videos are skipped.")
+    
+        cont1, cont2 = st.columns([2, 1])
+        with cont1:
+            more_count = st.number_input("More leads", min_value=5, max_value=8000,
+                                          value=30, step=5, key="more_count",
+                                          label_visibility="collapsed")
+        with cont2:
+            continue_btn = st.button("Continue →", type="primary", key="cont_btn")
+    
+        if continue_btn:
+            base_ids, base_channels = build_exclude_ids()
+            exclude_ids = base_ids | st.session_state.scraped_ids
+            new_results, new_ids = run_scrape(more_count, exclude_ids, base_channels)
+            st.session_state.results.extend(new_results)
+            st.session_state.scraped_ids.update(new_ids)
+            st.rerun()
 
-    if continue_btn:
-        base_ids, base_channels = build_exclude_ids()
-        exclude_ids = base_ids | st.session_state.scraped_ids
-        new_results, new_ids = run_scrape(more_count, exclude_ids, base_channels)
-        st.session_state.results.extend(new_results)
-        st.session_state.scraped_ids.update(new_ids)
-        st.rerun()
+with tab_lists:
+    st.markdown('<div class="section-header">Saved Lists Manager</div>', unsafe_allow_html=True)
+    all_saved_lists = get_saved_list_names()
+    
+    if not all_saved_lists:
+        st.info("You haven't saved any lists yet. Run a search and save the results to see them here.")
+    else:
+        selected_list = st.selectbox("Select a list to view", options=["—"] + all_saved_lists)
+        
+        if selected_list != "—":
+            list_data = load_list(selected_list)
+            if list_data:
+                list_df = pd.DataFrame(list_data)
+                st.metric("Total Leads", len(list_df))
+                st.dataframe(list_df, use_container_width=True, height=400)
+                
+                # CSV Download for saved list
+                csv_data = list_df.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    label=f"⬇️ Download '{selected_list}' as CSV",
+                    data=csv_data,
+                    file_name=f"{selected_list}.csv",
+                    mime="text/csv",
+                    key=f"dl_{selected_list}"
+                )
+            else:
+                st.warning("Could not load data for this list or the list is empty.")
+
